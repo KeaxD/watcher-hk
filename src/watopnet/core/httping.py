@@ -12,6 +12,7 @@ import datetime
 import falcon
 from keri.app import httping
 from keri.app.httping import CESR_DESTINATION_HEADER
+from keri import kering
 from keri.core import eventing, coring, parsing
 from keri.help import helping
 from keri.kering import Ilks
@@ -112,7 +113,9 @@ class HttpEnd:
 
             elif ilk in (Ilks.qry,):
                 kvy = QueryKeveryShim(watcher=watcher)
-                parsing.Parser(kvy=kvy).parseOne(ims=msg, local=False)
+                parsing.Parser(kvy=kvy, version=kering.Vrsn_1_0).parseOne(
+                    ims=msg, local=False
+                )
 
                 if not kvy.cues:
                     rep.set_header("Content-Type", "application/json")

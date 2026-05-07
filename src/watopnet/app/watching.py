@@ -12,7 +12,7 @@ import json
 import random
 from collections import namedtuple
 from dataclasses import asdict
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 import falcon
 from hio.base import doing, tyming
@@ -21,6 +21,7 @@ from hio.help import decking
 from keri import help
 from keri import kering
 from keri.app import configing, indirecting, habbing, agenting, querying
+from keri.app.httping import CESR_DESTINATION_HEADER
 from keri.app.oobiing import Oobiery
 from keri.core import coring, Salter, routing, eventing, parsing
 from keri.db.basing import OobiRecord, BaserDoer
@@ -227,11 +228,11 @@ class Watchery(doing.DoDoer):
         self.reload()
         doers = list(self.wats.values())
 
-        super(Watchery, self).__init__(doers=doers, always=True)
+        super(Watchery, self).__init__(doers=doers, always=True, temp=temp)
 
     def reload(self):
         """Load all watcher records from the database and instantiate Watcher doers."""
-        for said, wat in self.db.wats.getItemIter():
+        for said, wat in self.db.wats.getTopItemIter():
             hby = habbing.Habery(name=wat.name, base=self.base, temp=self.temp)
             hab = hby.habByName(wat.name)
 
@@ -281,7 +282,7 @@ class Watchery(doing.DoDoer):
         name = Salter().qb64
 
         # We need to manage keys from an HSM here
-        hby = habbing.Habery(name=name, base=self.base, bran=None)
+        hby = habbing.Habery(name=name, base=self.base, bran=None, temp=self.temp)
         hab = hby.makeHab(name=name, transferable=False)
         dt = helping.nowIso8601()
 
@@ -397,6 +398,7 @@ class Watcher(doing.DoDoer):
             exc=self.exc,
             rvy=self.rvy,
             vry=self.verifier,
+            version=kering.Vrsn_1_0,
         )
 
         self.oobiery = Oobiery(self.hby, rvy=self.rvy)
@@ -486,7 +488,7 @@ class SentinalDoer(doing.DoDoer):
 
     def watchWatched(self):
         """Launch a Sentinal for each enabled observed AID that is due for a check."""
-        for (_, _, oid), observed in self.hby.db.obvs.getItemIter(
+        for (_, _, oid), observed in self.hby.db.obvs.getTopItemIter(
             keys=(
                 self.cid,
                 self.hab.pre,
@@ -508,7 +510,9 @@ class SentinalDoer(doing.DoDoer):
 
     def watchControllers(self):
         """Launch a Sentinal for the controller AID if it is due for a check."""
-        for (_, _), dater in self.db.cids.getItemIter(keys=(self.hab.pre, self.cid)):
+        for (_, _), dater in self.db.cids.getTopItemIter(
+            keys=(self.hab.pre, self.cid)
+        ):
             if self.cid not in self.sentinals:
                 dtnow = helping.nowUTC()
                 dte = helping.fromIso8601(dater.dts)
@@ -559,7 +563,7 @@ class MessageDoer(doing.Doer):
 
         super(MessageDoer, self).__init__()
 
-    def recur(self, tyme=None):
+    def recur(self, tyme=None, tock=0.0, **kwa):
         """Yield from the parser's parsator loop until the connection closes."""
         logger.info("Watcher message processing loop ready")
 
@@ -735,6 +739,39 @@ class Sentinal(doing.DoDoer):
 
         super(Sentinal, self).__init__(doers=[doing.doify(self.watch)], **opts)
 
+    def queryWitnessState(self, wit, pre, tymth):
+        """Fetch and parse a witness-hk KSN reply for an observed AID."""
+        client, clientDoer = agenting.httpClient(self.hab, wit)
+
+        self.extend([clientDoer])
+        try:
+            client.request(
+                method="GET",
+                path=f"/ksn?{urlencode({'pre': pre})}",
+                headers={CESR_DESTINATION_HEADER: wit},
+            )
+
+            responseTymer = tyming.Tymer(tymth=tymth, duration=10.0)
+            while not client.responses and not responseTymer.expired:
+                yield self.tock
+
+            if not client.responses:
+                return "No response received within timeout"
+
+            rep = client.respond()
+            if rep.status != 200:
+                return f"Witness KSN query failed with HTTP {rep.status}"
+
+            self.hab.psr.parseOne(
+                ims=bytearray(rep.body),
+                local=False,
+                version=kering.Vrsn_1_0,
+            )
+
+            return None
+        finally:
+            self.remove([clientDoer])
+
     def watch(self, tymth, tock=0.0, **kwa):
         """Poll each witness of the observed AID and record the key-state comparison result.
 
@@ -780,36 +817,23 @@ class Sentinal(doing.DoDoer):
                 self.hab.db.ksns.rem((saider.qb64,))
 
             try:
-                witer = agenting.messenger(self.hab, wit)
-            except kering.ConfigurationError as ex:
-                witQuery.error = f"Missing witness endpoint: {ex}"
+                error = yield from self.queryWitnessState(
+                    wit=wit,
+                    pre=self.oid,
+                    tymth=self.tymth,
+                )
+            except (kering.ConfigurationError, kering.MissingEntryError) as ex:
+                error = f"Missing witness endpoint: {ex}"
+
+            if error:
+                witQuery.error = error
                 self.db.witq.pin(keys=(self.hab.pre, self.oid, wit), val=witQuery)
                 continue
-            self.extend([witer])
 
-            msg = self.hab.query(pre=self.oid, src=wit, route="ksn")
-            witer.msgs.append(bytearray(msg))
-
-            sendTymer = tyming.Tymer(tymth=self.tymth, duration=10.0)
-            while not witer.idle and not sendTymer.expired:
-                yield self.tock
-
-            self.remove([witer])
-
-            saider = None
-            responseTymer = tyming.Tymer(tymth=self.tymth, duration=10.0)
-            while True:
-                if (saider := self.hab.db.knas.get(keys)) is not None:
-                    break
-
-                if responseTymer.expired:
-                    witQuery.error = "No response received within timeout"
-                    self.db.witq.pin(keys=(self.hab.pre, self.oid, wit), val=witQuery)
-                    break
-
-                yield self.tock
-
+            saider = self.hab.db.knas.get(keys)
             if saider is None:
+                witQuery.error = "No key state notice received from witness"
+                self.db.witq.pin(keys=(self.hab.pre, self.oid, wit), val=witQuery)
                 continue
 
             mystate = kever.state()
@@ -1045,7 +1069,7 @@ class WatcherStatusEnd:
         aids_data = {}
         latest_query_time = None
 
-        for (watcher_id, aid, wit), query_record in watcher.db.witq.getItemIter(
+        for (watcher_id, aid, wit), query_record in watcher.db.witq.getTopItemIter(
             keys=(eid,)
         ):
 

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from keri import kering
 from keri.app import habbing
+from keri.app.httping import CESR_DESTINATION_HEADER
 from keri.core import eventing
 from watopnet.core import basing
 from watopnet.app.watching import Sentinal, States, Watcher, Watchery
@@ -69,7 +70,7 @@ def test_adding_watched(mockHelpingNowUTC):
         assert observed.enabled is True
 
 
-def test_sentinal_queries_witness_state_with_messenger(monkeypatch):
+def test_sentinal_queries_witness_state_with_http_ksn(monkeypatch):
     class FakeStore:
         def __init__(self):
             self.values = {}
@@ -95,7 +96,8 @@ def test_sentinal_queries_witness_state_with_messenger(monkeypatch):
     witq = FakeWitnessQueryStore()
     db = SimpleNamespace(knas=knas, ksns=ksns, witq=witq)
 
-    query_calls = []
+    requests = []
+    parsed = []
 
     class FakeKever:
         wits = ["WIT_1"]
@@ -109,28 +111,34 @@ def test_sentinal_queries_witness_state_with_messenger(monkeypatch):
         pre = "WATCHER_AID"
         kever = FakeKever()
 
-        @staticmethod
-        def query(*, pre, src, route):
-            query_calls.append((pre, src, route))
-            return b"ksn-query"
-
-    class FakeMessenger:
         def __init__(self):
-            self.idle = False
+            self.db = db
+            self.psr = SimpleNamespace(
+                parseOne=lambda **kwa: (
+                    parsed.append(kwa),
+                    knas.put(
+                        ("OBSERVED_AID", "WIT_1"),
+                        SimpleNamespace(qb64="SAID_1"),
+                    ),
+                    ksns.put(("SAID_1",), "witness-state"),
+                )
+            )
 
-            class Messages(list):
-                def append(inner_self, item):
-                    assert item == bytearray(b"ksn-query")
-                    knas.put(("OBSERVED_AID", "WIT_1"), SimpleNamespace(qb64="SAID_1"))
-                    ksns.put(("SAID_1",), "witness-state")
-                    self.idle = True
-                    super().append(item)
+    class FakeClient:
+        def __init__(self):
+            self.responses = [SimpleNamespace(status=200, body=b"ksn-reply")]
 
-            self.msgs = Messages()
+        def request(self, *, method, path, headers):
+            requests.append((method, path, headers))
 
+        def respond(self):
+            return self.responses.pop(0)
+
+    client = FakeClient()
+    client_doer = object()
     monkeypatch.setattr(
-        "watopnet.app.watching.agenting.messenger",
-        lambda hab, wit: FakeMessenger(),
+        "watopnet.app.watching.agenting.httpClient",
+        lambda hab, wit: (client, client_doer),
     )
     monkeypatch.setattr(
         Sentinal,
@@ -147,7 +155,7 @@ def test_sentinal_queries_witness_state_with_messenger(monkeypatch):
 
     sentinal = Sentinal(
         hby=SimpleNamespace(db=db, kevers={"OBSERVED_AID": FakeKever()}),
-        hab=SimpleNamespace(pre=FakeHab.pre, db=db, kever=FakeHab.kever, query=FakeHab.query),
+        hab=FakeHab(),
         oid="OBSERVED_AID",
         cid="CONTROLLER_AID",
         oobi="http://watcher.example/oobi",
@@ -162,13 +170,97 @@ def test_sentinal_queries_witness_state_with_messenger(monkeypatch):
         next(do)
 
     assert stop.value.value is True
-    assert query_calls == [("OBSERVED_AID", "WIT_1", "ksn")]
+    assert requests == [
+        (
+            "GET",
+            "/ksn?pre=OBSERVED_AID",
+            {CESR_DESTINATION_HEADER: "WIT_1"},
+        )
+    ]
+    assert parsed == [
+        {
+            "ims": bytearray(b"ksn-reply"),
+            "local": False,
+            "version": kering.Vrsn_1_0,
+        }
+    ]
     assert len(witq.calls) == 1
     keys, query = witq.calls[0]
     assert keys == ("WATCHER_AID", "OBSERVED_AID", "WIT_1")
     assert query.response_received is True
     assert query.state == States.even
     assert query.keystate == "witness-state"
+
+
+def test_query_witness_state_parses_real_keri10_ksn_reply(monkeypatch):
+    with (
+        habbing.openHab(name="wit", transferable=False, salt=b"0123456789fedwit") as (
+            _,
+            witHab,
+        ),
+        habbing.openHab(
+            name="bob",
+            salt=b"0123456789fedbob",
+            wits=[witHab.pre],
+            toad=1,
+        ) as (_, bobHab),
+        habbing.openHab(name="wan", transferable=False, salt=b"0123456789fedwan") as (
+            watHby,
+            watHab,
+        ),
+    ):
+        watHab.psr.parseOne(bobHab.makeOwnInception(), local=False)
+        rserder = eventing.reply(
+            route=f"/ksn/{witHab.pre}",
+            data=bobHab.kever.state()._asdict(),
+        )
+        body = witHab.endorse(rserder)
+
+        class FakeClient:
+            def __init__(self):
+                self.responses = [SimpleNamespace(status=200, body=body)]
+
+            def request(self, *, method, path, headers):
+                assert (method, path, headers) == (
+                    "GET",
+                    f"/ksn?pre={bobHab.pre}",
+                    {CESR_DESTINATION_HEADER: witHab.pre},
+                )
+
+            def respond(self):
+                return self.responses.pop(0)
+
+        client_doer = object()
+        monkeypatch.setattr(
+            "watopnet.app.watching.agenting.httpClient",
+            lambda hab, wit: (FakeClient(), client_doer),
+        )
+
+        sentinal = Sentinal(
+            hby=watHby,
+            hab=watHab,
+            oid=bobHab.pre,
+            cid=bobHab.pre,
+            oobi="http://watcher.example/oobi",
+            db=SimpleNamespace(),
+        )
+        monkeypatch.setattr(sentinal, "extend", lambda doers: None)
+        monkeypatch.setattr(sentinal, "remove", lambda doers: None)
+
+        query = sentinal.queryWitnessState(
+            wit=witHab.pre,
+            pre=bobHab.pre,
+            tymth=lambda: 0.0,
+        )
+        with pytest.raises(StopIteration) as stop:
+            next(query)
+
+        assert stop.value.value is None
+        saider = watHab.db.knas.get(keys=(bobHab.pre, witHab.pre))
+        assert saider is not None
+        ksn = watHab.db.ksns.get(keys=(saider.qb64,))
+        assert ksn.i == bobHab.pre
+        assert ksn.d == bobHab.kever.serder.said
 
 
 def test_sentinal_waits_for_delayed_witness_state(monkeypatch):
@@ -197,8 +289,6 @@ def test_sentinal_waits_for_delayed_witness_state(monkeypatch):
     witq = FakeWitnessQueryStore()
     db = SimpleNamespace(knas=knas, ksns=ksns, witq=witq)
 
-    query_calls = []
-
     class FakeKever:
         wits = ["WIT_1"]
         sn = 0
@@ -211,27 +301,14 @@ def test_sentinal_waits_for_delayed_witness_state(monkeypatch):
         pre = "WATCHER_AID"
         kever = FakeKever()
 
-        @staticmethod
-        def query(*, pre, src, route):
-            query_calls.append((pre, src, route))
-            return b"ksn-query"
+    def delayed_query(self, *, wit, pre, tymth):
+        assert (wit, pre) == ("WIT_1", "OBSERVED_AID")
+        yield self.tock
+        knas.put(("OBSERVED_AID", "WIT_1"), SimpleNamespace(qb64="SAID_1"))
+        ksns.put(("SAID_1",), "witness-state")
+        return None
 
-    class FakeMessenger:
-        def __init__(self):
-            self.idle = False
-
-            class Messages(list):
-                def append(inner_self, item):
-                    assert item == bytearray(b"ksn-query")
-                    self.idle = True
-                    super().append(item)
-
-            self.msgs = Messages()
-
-    monkeypatch.setattr(
-        "watopnet.app.watching.agenting.messenger",
-        lambda hab, wit: FakeMessenger(),
-    )
+    monkeypatch.setattr(Sentinal, "queryWitnessState", delayed_query)
     monkeypatch.setattr(
         Sentinal,
         "diffState",
@@ -247,7 +324,7 @@ def test_sentinal_waits_for_delayed_witness_state(monkeypatch):
 
     sentinal = Sentinal(
         hby=SimpleNamespace(db=db, kevers={"OBSERVED_AID": FakeKever()}),
-        hab=SimpleNamespace(pre=FakeHab.pre, db=db, kever=FakeHab.kever, query=FakeHab.query),
+        hab=SimpleNamespace(pre=FakeHab.pre, db=db, kever=FakeHab.kever),
         oid="OBSERVED_AID",
         cid="CONTROLLER_AID",
         oobi="http://watcher.example/oobi",
@@ -267,7 +344,6 @@ def test_sentinal_waits_for_delayed_witness_state(monkeypatch):
         next(do)
 
     assert stop.value.value is True
-    assert query_calls == [("OBSERVED_AID", "WIT_1", "ksn")]
     assert len(witq.calls) == 1
     keys, query = witq.calls[0]
     assert keys == ("WATCHER_AID", "OBSERVED_AID", "WIT_1")
@@ -294,8 +370,6 @@ def test_sentinal_pins_unresolved_witness_endpoint_without_crashing(monkeypatch)
         def state():
             return "local-state"
 
-    query_calls = []
-
     class FakeHab:
         pre = "WATCHER_AID"
         db = SimpleNamespace(
@@ -304,17 +378,12 @@ def test_sentinal_pins_unresolved_witness_endpoint_without_crashing(monkeypatch)
         )
         kever = FakeKever()
 
-        @staticmethod
-        def query(*, pre, src, route):
-            query_calls.append((pre, src, route))
-            return b"ksn-query"
-
-    def fake_messenger(hab, wit):
-        raise kering.ConfigurationError(
-            f"unable to find a valid endpoint for witness={wit}"
+    def fake_http_client(hab, wit):
+        raise kering.MissingEntryError(
+            f"unable to query witness {wit}, no http endpoint"
         )
 
-    monkeypatch.setattr("watopnet.app.watching.agenting.messenger", fake_messenger)
+    monkeypatch.setattr("watopnet.app.watching.agenting.httpClient", fake_http_client)
 
     sentinal = Sentinal(
         hby=SimpleNamespace(kevers={"OBSERVED_AID": FakeKever()}),
@@ -333,10 +402,190 @@ def test_sentinal_pins_unresolved_witness_endpoint_without_crashing(monkeypatch)
         next(do)
 
     assert stop.value.value is True
-    assert query_calls == []
     assert len(witq.calls) == 1
     keys, query = witq.calls[0]
     assert keys == ("WATCHER_AID", "OBSERVED_AID", "WIT_1")
     assert query.response_received is False
     assert query.state == States.unresponsive
-    assert query.error == "Missing witness endpoint: unable to find a valid endpoint for witness=WIT_1"
+    assert query.error == (
+        "Missing witness endpoint: unable to query witness WIT_1, no http endpoint"
+    )
+
+
+def test_sentinal_pins_non_200_witness_ksn_response(monkeypatch):
+    class FakeWitnessQueryStore:
+        def __init__(self):
+            self.calls = []
+
+        def pin(self, *, keys, val):
+            self.calls.append((keys, val))
+
+    class FakeKever:
+        wits = ["WIT_1"]
+        sn = 0
+
+    class FakeHab:
+        pre = "WATCHER_AID"
+        db = SimpleNamespace(
+            knas=SimpleNamespace(get=lambda keys: None, rem=lambda keys: None),
+            ksns=SimpleNamespace(rem=lambda keys: None),
+        )
+
+    class FakeClient:
+        def __init__(self):
+            self.responses = [SimpleNamespace(status=503, body=b"down")]
+
+        def request(self, *, method, path, headers):
+            pass
+
+        def respond(self):
+            return self.responses.pop(0)
+
+    witq = FakeWitnessQueryStore()
+    monkeypatch.setattr(
+        "watopnet.app.watching.agenting.httpClient",
+        lambda hab, wit: (FakeClient(), object()),
+    )
+
+    sentinal = Sentinal(
+        hby=SimpleNamespace(kevers={"OBSERVED_AID": FakeKever()}),
+        hab=FakeHab(),
+        oid="OBSERVED_AID",
+        cid="CONTROLLER_AID",
+        oobi="http://watcher.example/oobi",
+        db=SimpleNamespace(witq=witq),
+    )
+    monkeypatch.setattr(sentinal, "extend", lambda doers: None)
+    monkeypatch.setattr(sentinal, "remove", lambda doers: None)
+
+    do = sentinal.watch(lambda: 0.0, tock=0.0)
+    assert next(do) == 0.0
+    with pytest.raises(StopIteration) as stop:
+        next(do)
+
+    assert stop.value.value is True
+    _, query = witq.calls[0]
+    assert query.response_received is False
+    assert query.state == States.unresponsive
+    assert query.error == "Witness KSN query failed with HTTP 503"
+
+
+def test_sentinal_pins_timeout_when_witness_ksn_response_never_arrives(monkeypatch):
+    class FakeWitnessQueryStore:
+        def __init__(self):
+            self.calls = []
+
+        def pin(self, *, keys, val):
+            self.calls.append((keys, val))
+
+    class FakeKever:
+        wits = ["WIT_1"]
+        sn = 0
+
+    class FakeHab:
+        pre = "WATCHER_AID"
+        db = SimpleNamespace(
+            knas=SimpleNamespace(get=lambda keys: None, rem=lambda keys: None),
+            ksns=SimpleNamespace(rem=lambda keys: None),
+        )
+
+    class FakeClient:
+        def __init__(self):
+            self.responses = []
+
+        def request(self, *, method, path, headers):
+            pass
+
+    witq = FakeWitnessQueryStore()
+    monkeypatch.setattr(
+        "watopnet.app.watching.agenting.httpClient",
+        lambda hab, wit: (FakeClient(), object()),
+    )
+
+    sentinal = Sentinal(
+        hby=SimpleNamespace(kevers={"OBSERVED_AID": FakeKever()}),
+        hab=FakeHab(),
+        oid="OBSERVED_AID",
+        cid="CONTROLLER_AID",
+        oobi="http://watcher.example/oobi",
+        db=SimpleNamespace(witq=witq),
+    )
+    monkeypatch.setattr(sentinal, "extend", lambda doers: None)
+    monkeypatch.setattr(sentinal, "remove", lambda doers: None)
+
+    tyme = {"value": 0.0}
+    do = sentinal.watch(lambda: tyme["value"], tock=0.0)
+    assert next(do) == 0.0
+    assert next(do) == 0.0
+    tyme["value"] = 11.0
+    with pytest.raises(StopIteration) as stop:
+        next(do)
+
+    assert stop.value.value is True
+    _, query = witq.calls[0]
+    assert query.response_received is False
+    assert query.state == States.unresponsive
+    assert query.error == "No response received within timeout"
+
+
+def test_sentinal_pins_no_ksn_when_parsed_reply_is_not_accepted(monkeypatch):
+    class FakeWitnessQueryStore:
+        def __init__(self):
+            self.calls = []
+
+        def pin(self, *, keys, val):
+            self.calls.append((keys, val))
+
+    class FakeKever:
+        wits = ["WIT_1"]
+        sn = 0
+
+        @staticmethod
+        def state():
+            return "local-state"
+
+    class FakeHab:
+        pre = "WATCHER_AID"
+        db = SimpleNamespace(
+            knas=SimpleNamespace(get=lambda keys: None, rem=lambda keys: None),
+            ksns=SimpleNamespace(rem=lambda keys: None),
+        )
+        psr = SimpleNamespace(parseOne=lambda **kwa: None)
+
+    class FakeClient:
+        def __init__(self):
+            self.responses = [SimpleNamespace(status=200, body=b"not-a-verified-ksn")]
+
+        def request(self, *, method, path, headers):
+            pass
+
+        def respond(self):
+            return self.responses.pop(0)
+
+    witq = FakeWitnessQueryStore()
+    monkeypatch.setattr(
+        "watopnet.app.watching.agenting.httpClient",
+        lambda hab, wit: (FakeClient(), object()),
+    )
+
+    sentinal = Sentinal(
+        hby=SimpleNamespace(kevers={"OBSERVED_AID": FakeKever()}),
+        hab=FakeHab(),
+        oid="OBSERVED_AID",
+        cid="CONTROLLER_AID",
+        oobi="http://watcher.example/oobi",
+        db=SimpleNamespace(witq=witq),
+    )
+    monkeypatch.setattr(sentinal, "extend", lambda doers: None)
+    monkeypatch.setattr(sentinal, "remove", lambda doers: None)
+
+    do = sentinal.watch(lambda: 0.0, tock=0.0)
+    assert next(do) == 0.0
+    with pytest.raises(StopIteration) as stop:
+        next(do)
+
+    assert stop.value.value is True
+    _, query = witq.calls[0]
+    assert query.response_received is False
+    assert query.state == States.unresponsive
+    assert query.error == "No key state notice received from witness"

@@ -11,6 +11,7 @@ spawns a Reactant per connection to parse CESR query messages and send signed re
 from hio.base import doing
 from hio.help import decking
 from keri import help
+from keri import kering
 from keri.core import parsing
 
 from watopnet.core import eventing
@@ -120,7 +121,12 @@ class Reactant(doing.DoDoer):
         doers = doers if doers is not None else []
         doers.extend([doing.doify(self.remoteDo), doing.doify(self.cueDo)])
 
-        self.parser = parsing.Parser(ims=self.remoter.rxbs, kvy=self.kvy, framed=True)
+        self.parser = parsing.Parser(
+            ims=self.remoter.rxbs,
+            kvy=self.kvy,
+            framed=True,
+            version=kering.Vrsn_1_0,
+        )
 
         super(Reactant, self).__init__(doers=doers, **kwa)
         if self.tymth:
