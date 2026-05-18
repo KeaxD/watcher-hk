@@ -51,6 +51,7 @@ def _isFdExhaustion(exc):
         current = current.__cause__ or current.__context__
     return False
 
+
 Stateage = namedtuple("Stateage", "even ahead behind duplicitous unresponsive")
 States = Stateage(
     even="even",
