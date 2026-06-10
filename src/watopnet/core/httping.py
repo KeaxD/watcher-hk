@@ -122,7 +122,12 @@ class HttpEnd:
             Ilks.exn,
             Ilks.rpy,
         ):
-            watcher.psr.parseOne(ims=msg, local=True, version=pvrsn)
+            try:
+                watcher.psr.parseOne(ims=msg, local=True, version=pvrsn)
+            except kering.KeriError as ex:
+                raise falcon.HTTPBadRequest(
+                    description=f"invalid KERI message: {ex}"
+                ) from ex
 
             rep.set_header("Content-Type", "application/json")
             rep.status = falcon.HTTP_204
@@ -133,7 +138,12 @@ class HttpEnd:
 
         elif ilk in (Ilks.qry,):
             kvy = QueryKeveryShim(watcher=watcher)
-            parsing.Parser(kvy=kvy, version=pvrsn).parseOne(ims=msg, local=False)
+            try:
+                parsing.Parser(kvy=kvy, version=pvrsn).parseOne(ims=msg, local=False)
+            except kering.KeriError as ex:
+                raise falcon.HTTPBadRequest(
+                    description=f"invalid KERI query: {ex}"
+                ) from ex
 
             if not kvy.cues:
                 rep.set_header("Content-Type", "application/json")
@@ -213,7 +223,12 @@ class HttpEnd:
                 description=f"invalid CESR payload: {ex}"
             ) from ex
 
-        watcher.psr.parse(ims=ims, local=True, version=serder.pvrsn)
+        try:
+            watcher.psr.parse(ims=ims, local=True, version=serder.pvrsn)
+        except kering.KeriError as ex:
+            raise falcon.HTTPBadRequest(
+                description=f"invalid KERI stream: {ex}"
+            ) from ex
 
         rep.set_header("Content-Type", "application/json")
         rep.status = falcon.HTTP_204

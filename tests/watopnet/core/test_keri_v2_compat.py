@@ -287,6 +287,70 @@ def test_http_post_rejects_unsupported_keri_ilk(monkeypatch):
     assert rep.status == falcon.HTTP_UNPROCESSABLE_ENTITY
 
 
+def test_http_post_maps_event_parser_errors_to_bad_request(monkeypatch):
+    serder = eventing.reply(route="/watcher/add", data={})
+    monkeypatch.setattr(
+        wat_httping.httping,
+        "parseCesrHttpRequest",
+        lambda req: SimpleNamespace(payload=serder.ked, attachments=""),
+    )
+
+    def fail_parse_one(**kwa):
+        raise kering.ValidationError("bad event")
+
+    watcher = SimpleNamespace(
+        cid=CONTROLLER_AID,
+        hab=SimpleNamespace(),
+        psr=SimpleNamespace(parseOne=fail_parse_one),
+    )
+    wty = SimpleNamespace(lookup=lambda aid: watcher if aid == WATCHER_AID else None)
+    req = SimpleNamespace(
+        method="POST",
+        headers={CESR_DESTINATION_HEADER: WATCHER_AID},
+    )
+    rep = Response()
+
+    with pytest.raises(falcon.HTTPBadRequest) as exc:
+        wat_httping.HttpEnd(wty=wty).on_post(req, rep)
+
+    assert "invalid KERI message" in exc.value.description
+
+
+def test_http_post_maps_query_parser_errors_to_bad_request(monkeypatch):
+    serder = eventing.query(
+        pre=CONTROLLER_AID,
+        route="ksn",
+        query={"src": WATCHER_AID},
+    )
+    monkeypatch.setattr(
+        wat_httping.httping,
+        "parseCesrHttpRequest",
+        lambda req: SimpleNamespace(payload=serder.ked, attachments=""),
+    )
+
+    class FailingParser:
+        def __init__(self, **kwa):
+            pass
+
+        def parseOne(self, ims, local=False):
+            raise kering.ValidationError("bad query")
+
+    monkeypatch.setattr(wat_httping.parsing, "Parser", FailingParser)
+
+    watcher = SimpleNamespace(cid=CONTROLLER_AID, hab=SimpleNamespace())
+    wty = SimpleNamespace(lookup=lambda aid: watcher if aid == WATCHER_AID else None)
+    req = SimpleNamespace(
+        method="POST",
+        headers={CESR_DESTINATION_HEADER: WATCHER_AID},
+    )
+    rep = Response()
+
+    with pytest.raises(falcon.HTTPBadRequest) as exc:
+        wat_httping.HttpEnd(wty=wty).on_post(req, rep)
+
+    assert "invalid KERI query" in exc.value.description
+
+
 def test_http_put_rejects_invalid_raw_cesr_with_bad_request():
     watcher = SimpleNamespace(psr=SimpleNamespace(parse=lambda **kwa: None))
     wty = SimpleNamespace(lookup=lambda aid: watcher if aid == WATCHER_AID else None)
@@ -301,6 +365,27 @@ def test_http_put_rejects_invalid_raw_cesr_with_bad_request():
         wat_httping.HttpEnd(wty=wty).on_put(req, rep)
 
     assert "invalid CESR payload" in exc.value.description
+
+
+def test_http_put_maps_parser_errors_to_bad_request():
+    serder = eventing.reply(route="/watcher/add", data={})
+
+    def fail_parse(**kwa):
+        raise kering.ValidationError("bad stream")
+
+    watcher = SimpleNamespace(psr=SimpleNamespace(parse=fail_parse))
+    wty = SimpleNamespace(lookup=lambda aid: watcher if aid == WATCHER_AID else None)
+    req = SimpleNamespace(
+        method="PUT",
+        headers={CESR_DESTINATION_HEADER: WATCHER_AID},
+        bounded_stream=SimpleNamespace(read=lambda: serder.raw),
+    )
+    rep = Response()
+
+    with pytest.raises(falcon.HTTPBadRequest) as exc:
+        wat_httping.HttpEnd(wty=wty).on_put(req, rep)
+
+    assert "invalid KERI stream" in exc.value.description
 
 
 def test_query_replies_are_normalized_to_fixed_v2_cesr(monkeypatch):
@@ -445,6 +530,30 @@ def test_tcp_reactant_drops_invalid_prefix_without_crashing():
 
     assert remoter.rxbs == bytearray()
     assert parsed == []
+
+
+def test_tcp_reactant_drops_stale_reply_cue_without_crashing():
+    remoter = SimpleNamespace(rxbs=bytearray(), wind=lambda tymth: None, tx=lambda msg: None)
+    reactant = Reactant(
+        wty=SimpleNamespace(lookup=lambda aid: None),
+        remoter=remoter,
+    )
+    sent = []
+    reactant.sendMessage = lambda msg: sent.append(msg)
+    reactant.cues.push(
+        dict(
+            kin="reply",
+            src=WATCHER_AID,
+            serder=SimpleNamespace(),
+        )
+    )
+
+    do = reactant.cueDo(lambda: 0.0, tock=0.0)
+    assert next(do) == 0.0
+    assert next(do) is None
+
+    assert sent == []
+    assert not reactant.cues
 
 
 def test_sentinal_doer_scans_real_obvs_and_cids_top_iteration(monkeypatch):
