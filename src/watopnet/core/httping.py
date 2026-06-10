@@ -234,28 +234,6 @@ class HttpEnd:
         rep.status = falcon.HTTP_204
 
 
-def getRequiredParam(body, name):
-    """Extract a required field from a parsed request body dict.
-
-    Parameters:
-        body (dict): parsed JSON request body
-        name (str): field name to extract
-
-    Returns:
-        object: the field value
-
-    Raises:
-        falcon.HTTPBadRequest: if the field is absent or None
-    """
-    param = body.get(name)
-    if param is None:
-        raise falcon.HTTPBadRequest(
-            description=f"required field '{name}' missing from request"
-        )
-
-    return param
-
-
 class Throttle(object):
     """Falcon middleware that rate-limits requests by client IP address.
 

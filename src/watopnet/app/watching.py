@@ -261,10 +261,7 @@ class Watchery(doing.DoDoer):
         Returns:
             Watcher | None: the matching Watcher instance, or None
         """
-        if aid in self.wats:
-            return self.wats[aid]
-
-        return None
+        return self.wats.get(aid)
 
     @property
     def url(self):
@@ -1027,7 +1024,11 @@ class WatcherCollectionEnd:
             rep (Response): Falcon HTTP response object
         """
         body = req.get_media()
-        aid = httping.getRequiredParam(body, "aid")
+        aid = body.get("aid")
+        if aid is None:
+            raise falcon.HTTPBadRequest(
+                description="required field 'aid' missing from request"
+            )
         oobi = body.get("oobi")
 
         try:
