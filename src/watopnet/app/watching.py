@@ -686,11 +686,11 @@ class EscrowDoer(doing.Doer):
 
 
 class CueDoer(doing.Doer):
-    """Doer that classifies inbound cues and forwards appropriate replies to the response deck.
+    """Doer that classifies inbound cues and optionally forwards replies.
 
-    Handles receipt/notice cues (forwards a signed KSN), replay cues (forwards
-    log messages after verifying the AID is observed), and reply/ksn cues
-    (forwards KSN replies for observed AIDs).
+    Handles receipt/notice cues (optionally forwards a signed KSN), replay cues
+    (optionally forwards log messages after verifying the AID is observed), and
+    reply/ksn cues (optionally forwards KSN replies for observed AIDs).
     """
 
     def __init__(self, db, hab, aid, cues, responses=None):
@@ -746,10 +746,12 @@ class CueDoer(doing.Doer):
                     rep = dict(kin="reply", src=self.hab.pre, dest=self.aid, serder=rpy)
                     if self.responses is not None:
                         self.responses.append(rep)
-
-                    logger.info(
-                        f"watcher forwarding ksn for {cuedSerder.pre} at {cuedSerder.sn} to cid={cid}"
-                    )
+                        logger.info(
+                            "watcher forwarding ksn for %s at %s to cid=%s",
+                            cuedSerder.pre,
+                            cuedSerder.sn,
+                            cid,
+                        )
 
                 else:
                     logger.info(
