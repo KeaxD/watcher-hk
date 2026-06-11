@@ -6,15 +6,44 @@ testing watopnet.core.watching package
 
 """
 
+import errno
 from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import falcon
 import pytest
+from falcon import testing
 from keri import kering
 from keri.app import habbing
 from keri.app.httping import CESR_DESTINATION_HEADER
 from keri.core import eventing
 
+from watopnet.app import watching
 from watopnet.core import basing
 from watopnet.app.watching import Sentinal, States, Watcher, Watchery
+
+CONTROLLER_AID = "ENsqL5zLYNbZf0kcOlx-ioqNWlatD9rKZZM4hbEI7nza"
+
+
+def test_watcher_fd_exhaustion_detection_handles_oserror_and_lmdb_text():
+    assert watching._isFdExhaustion(OSError(errno.EMFILE, "Too many open files"))
+    assert watching._isFdExhaustion(RuntimeError("lmdb failure: Too many open files"))
+
+
+def test_create_watcher_fd_exhaustion_returns_service_unavailable():
+    wty = MagicMock()
+    wty.createWatcher.side_effect = RuntimeError("lmdb failure: Too many open files")
+
+    endpoint = watching.WatcherCollectionEnd(wty=wty)
+    app = falcon.App()
+    app.add_route("/watchers", endpoint)
+    client = testing.TestClient(app)
+
+    response = client.simulate_post("/watchers", json={"aid": CONTROLLER_AID})
+
+    assert response.status == falcon.HTTP_503
+    assert response.json["title"] == "Watcher service unavailable"
+    wty._logFdExhaustion.assert_called_once_with(CONTROLLER_AID)
 
 
 def test_adding_watched(mockHelpingNowUTC):
